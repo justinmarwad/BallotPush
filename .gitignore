@@ -1,4 +1,6 @@
 *.csv
 *.env
 *.pdf 
-output/
+Ballot_Files/
+*.log 
+.DS_Store

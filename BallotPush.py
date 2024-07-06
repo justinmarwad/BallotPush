@@ -1,163 +1,108 @@
-# Made by Justin Marwad, 2022 (updated 2023)
+# Made by Justin Marwad, 2022 (updated 2024)
 
-from dotenv import load_dotenv
+import os, glob, pandas as pd, re
 from redmail import gmail
-from pathlib import Path
-import csv, os, glob, json
+from dotenv import load_dotenv
 
-# FORMAT = "LastF_Round_X"
-
-class BallotPush: 
-    def __init__(self, csv, subject, message, email=None, password=None): 
-        self.subject    = subject
-        self.message    = message
-        self.email      = email 
-        self.password   = password
-
-        self.data = open(csv) 
-
-        # Load .env file if email and password are not provided
-        load_dotenv()
-        if self.email is None: 
-            self.email = os.getenv("EMAIL")
-        if self.password is None: 
-            self.password = os.getenv("PASSWORD")
-        
-
-    def collect_ballots(self):
-        """ Creates Python dictionary where the key is debater's lastname_firstname and each value is a list which contains two lists. One for full paths for pdf files which are ballots. And one for firstname, lastname, and email."""
-
-        print("[*] Collecting ballots...")
-
-        # Create empty dictionary
-        self.ballots = {}
-
-        # Loop over each row in the csv file
-        for row in csv.reader(self.data, delimiter=","):
-            firstname, lastname, email = row[0], row[1], row[2] 
-
-            print(f"[*] Collecting ballots for {firstname} {lastname}...")
-
-            # Parse ballots for the debater
-            parsed_ballots = self.parse_ballots(firstname, lastname)
-            if parsed_ballots: 
-
-                # Add the debater to the dictionary
-                self.ballots[f"{lastname}_{firstname}"] = [
-                    [firstname, lastname, email], 
-                    parsed_ballots
-                ]
-
-        return self.ballots
-
-    def parse_ballots(self, firstname, lastname): 
-        """ Finds a ballot given a name 
-                - Enters each round folder in the output folder (named Round_X)
-                - There are four rounds which are numbered 1-4 and additionally there are doubleoctas, octas, quarters, semis, and finals (though these may not exist)
-                - Runs parse_ballot on each ballot in each round folder 
-                - parse_ballot returns true or false depending on whether the ballot was found for the given name
-        """
-        # Create empty list
-        found_ballots = []
-
-        # Loop over each round folder in the output folder
-        for round_folder in glob.glob("output\\Round_*"):
-            # Get the round number from the folder name
-            round_num = round_folder.split("_")[-1]
-
-            # Loop over each ballot in the round folder
-            for ballot_filename in glob.glob(f"{round_folder}\\*.pdf"):
-
-
-                # Remove full path (i.e output\Round_X\) from ballot filename
-                ballot_filename = ballot_filename.split("\\")[-1]
-
-                # Parse the ballot
-                if self.parse_ballot(ballot_filename, firstname, lastname): 
-                    # If the ballot matches, add it to the list
-                    found_ballots.append(os.path.join(round_folder, ballot_filename))
-
-        return found_ballots
-
-    def parse_ballot(self, filename, firstname, lastname): 
-        """ Parses a ballot filename given a firstname and lastname and return True if matches, else return false ."""
-
-        # print(f"[*] Parsing ballot {filename}...")
-
-        # Split the string into three parts based on underscores
-        parts = filename.split('_')
-
-        # Extract the last name and first initial of each debater
-        debater1_last_name = parts[0][:-1]
-        debater1_first_initial = parts[0][-1]
-
-        debater2_last_name = parts[1][:-1]
-        debater2_first_initial = parts[1][-1]
-
-        # Print the results
-        # print("Debater 1:")
-        # print("Last Name:", debater1_last_name)
-        # print("First Initial:", debater1_first_initial)
-
-        # print("\nDebater 2:")
-        # print("Last Name:", debater2_last_name)
-        # print("First Initial:", debater2_first_initial, "\n\n")
-
-        # if debater1 or debater2 is the name we are looking for, return true
-        if debater1_last_name == lastname and debater1_first_initial == firstname[0].upper():
-            return True
-        elif debater2_last_name == lastname and debater2_first_initial == firstname[0].upper():
-            return True
-        else:
-            return False
-
-    def send_ballots(self):
-        """ Sends ballots to each debater in the ballots dictionary. """
-
-        print("[*] Sending ballots...")
-
-        # Loop over each debater in the ballots dictionary
-        for debater in self.ballots: 
-
-            # Get the debater's name, email, and ballots 
-            firstname   = self.ballots[debater][0][0]
-            lastname    = self.ballots[debater][0][1]
-            email       = self.ballots[debater][0][2]
-            files       = self.ballots[debater][1]
-
-            # Send the ballots
-            self.send_ballot(firstname, lastname, email, files)
-
-    def send_ballot(self, firstname, lastname, email, files=None, full_message=None): 
-        """ Sends a ballot to a debater. """
-        print(f"[*] Sending {firstname} {lastname}'s ballots to {email}...")
-        
-        # Collect all ballots and save them to list as Path objects 
-        file_attachments = [Path(f) for f in files]
-
-        if full_message is None: 
-            full_message = f"Hello {firstname} {lastname}, <br><br> {self.message}"
-
+class BallotPush:
+    def __init__(self, competitors_file, base_directory, email, password, subject, message):
+        self.competitors_file = competitors_file
+        self.base_directory = base_directory
+        self.competitors = pd.read_csv(competitors_file)
+        self.email = email
+        self.password = password
+        self.subject = subject
+        self.message = message
         gmail.username = self.email
         gmail.password = self.password
+    
+    def find_ballot(self, first_name, last_name, pdf_files):
+        first_initial = first_name[0].upper()
+        last_initial = last_name[0].upper()
+        last_name_upper = last_name.upper()
+        first_name_upper = first_name.upper()
+        
+        # Pattern to match last_name first, then first_name or vice versa
+        pattern1 = re.compile(rf"{last_name_upper}{first_initial}.*\.pdf", re.IGNORECASE)
+        pattern2 = re.compile(rf"{first_name_upper}{last_initial}.*\.pdf", re.IGNORECASE)
+        
+        matching_pdfs = [pdf for pdf in pdf_files if pattern1.search(os.path.basename(pdf)) or pattern2.search(os.path.basename(pdf))]
+        return matching_pdfs
+
+    def find_ballots(self):
+        pdf_files = []
+        for subdir, _, _ in os.walk(self.base_directory):
+            pdf_files.extend(glob.glob(os.path.join(subdir, "*.pdf")))
+
+        results = {}
+        for index, row in self.competitors.iterrows():
+            first_name = row['First Name']
+            last_name = row['Last Name']
+            email_address = row.get('Email', None)  # Optional email column in competitors.csv
+            full_name = f"{first_name} {last_name}"
+
+            matching_pdfs = self.find_ballot(first_name, last_name, pdf_files)
+            
+            if matching_pdfs:
+                print(f"Competitor: {first_name} {last_name}")
+                for pdf in matching_pdfs:
+                    print(f"\t - Matched PDF: {pdf}")
+                if email_address:
+                    if email_address not in results:
+                        results[email_address] = {'full_name': full_name, 'pdfs': []}
+                    results[email_address]['pdfs'].extend(matching_pdfs)
+            else:
+                print(f"No match found for {first_name} {last_name}")
+        return results
+
+    def send_email(self, to_email, full_name, pdf_paths):
+        message = f"{full_name}, <br><br> {self.message}"
+        
+        # Check file paths before sending
+        for pdf in pdf_paths:
+            if not os.path.isfile(pdf):
+                print(f"[-] ERROR: {pdf} does not exist or cannot be read.")
+                return
+
+        # Read and attach files
+        attachments = {}
+        for pdf in pdf_paths:
+            try:
+                with open(pdf, "rb") as file:
+                    attachments[os.path.basename(pdf)] = file.read()
+            except Exception as e:
+                print(f"Error reading {pdf}: {e}")
+                return
+        
         gmail.send(
-            subject=self.subject, 
-            html=full_message, 
-            receivers=[email], 
-            attachments=file_attachments
+            subject=self.subject,
+            sender=self.email,
+            receivers=[to_email],
+            cc=["justinmarwad@gmail.com"],
+            html=message,
+            attachments=attachments
         )
+        print(f"Email sent to {to_email} with attachments {', '.join(attachments.keys())}")
 
+    def send_emails(self, email_pdf_dict):
+        for to_email, data in email_pdf_dict.items():
+            self.send_email(to_email, data['full_name'], data['pdfs'])
 
-if __name__ == "__main__": 
-    bp = BallotPush(
-        "output/competitors.csv",
-        "Ballot Delivery - Tournament Name Year",
-        "Thank you for your participation in the {tournament} {year}! Your ballots have been attached to this email. <br><br> Regards, <br> {name} <br> {organization} <br>"  
+if __name__ == "__main__":
+    load_dotenv()  # Load environment variables from .env file
+    
+    email = os.getenv('EMAIL')
+    password = os.getenv('PASSWORD')
+    subject = os.getenv('SUBJECT', "Default Subject")
+    message = os.getenv('MESSAGE', "Default Message")
+    
+    matcher = BallotPush(
+        competitors_file="competitors.csv",
+        base_directory="Ballot_Files", 
+        email=email,
+        password=password,
+        subject=subject,
+        message=message
     )
-
-    # create list
-    bp.collect_ballots() 
-
-    # Send ballots
-    bp.send_ballots()
-
+    email_pdf_dict = matcher.find_ballots()
+    matcher.send_emails(email_pdf_dict)
